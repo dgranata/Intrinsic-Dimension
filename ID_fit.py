@@ -1,14 +1,15 @@
-import sys, getopt
+import sys,argparse
 import numpy as n
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit 
+from scipy.optimize import curve_fit
+from scipy.sparse import csr_matrix
 from scipy.spatial import distance
 from sklearn.neighbors import kneighbors_graph, radius_neighbors_graph
 from sklearn.utils.graph import graph_shortest_path
 
 def func(x,a,b,c):
     return a*n.log(n.sin(x/1*n.pi/2.))
-
+         
 def func2(x,a):
     return -a/2.*(x-1)**2
 
@@ -16,57 +17,32 @@ def func3(x,a,b,c):
     return n.exp(c)*n.sin(x/b*n.pi/2.)**a
 
 def main(argv):
-
-     if (len(sys.argv) == 1): 
-         print 'Usage: fit_find_D_file.py -f <filename> (Optional: -m <metric>)'
-         sys.exit(2)
-
-     input_f = ''
-     me='euclidean'
-     n_neighbors = 3
-     radius=0
+     
+     parser = argparse.ArgumentParser(epilog="NOTE: it is important to have a smooth histogram for accurate fitting\n\n")
+     parser.add_argument("filename", help="input filename")
+     
+     parser.add_argument("-m", "--metric" , type=str,  help="define the scipy distance to be used   (Default: euclidean or hamming for MSA)",default='euclidean')
+     parser.add_argument("-x", "--matrix", help="if the input file contains already the complete upper triangle of a distance matrix (2 Formats: (idx_i idx_j distance) or simply distances list ) (Opt)", action="store_true")
+     parser.add_argument("-k", "--n_neighbors", type=int, help="nearest_neighbors parameter (Default k=3)", default=3)
+     parser.add_argument("-r", "--radius", type=float, help="use neighbor radius instead of nearest_neighbors  (Opt)")
+     parser.add_argument("-b", "--n_bins", type=int, help="number of bins for distance histogram (Default 50)",default=50)
+     parser.add_argument("-M", "--r_max", type=float, help="fix the value of distance distribution maximum in the fit (Opt)",default=0)
+     parser.add_argument("-n", "--r_min", type=float, help="fix the value of shortest distance considered in the fit (Opt, -1 force the standard fit, avoiding consistency checks)",default=-10)
+     parser.add_argument("-D", "--direct", help="analyze the direct (not graph) distances (Opt)", action="store_true")
+     parser.add_argument("-I", "--projection", help="produce an Isomap projection using the first ID components (Opt)", action="store_true")
+     
+     args = parser.parse_args()
+     #print args
+     input_f = args.filename
+     me=args.metric
+     n_neighbors = args.n_neighbors
+     radius=args.radius
      MSA=False
-     direct=False
-     isomap_projection=False
-     n_bins = 0
-     rmax=0
+     n_bins = args.n_bins
+     rmax=args.r_max
+     mm=-10000
 
-     try:
-         opts, args = getopt.getopt(argv,"hf:m:k:r:M:D:b:I",["input_f=","metric=","nearest_neighbors","neighbor_radius","r_max","direct","nbin","project"])
-     except getopt.GetoptError:
-         print 'Usage: fit_find_file.py -f <filename> OR -h'
-         sys.exit(2)
-     for opt, arg in opts:
-         if opt == '-h':
-             print 'Usage: fit_find_file.py -f <filename> '
-             print '                        -m <metric>   (Default: euclidean or hamming for MSA)'
-             print '                        -k <nearest_neighbors parameter>   (Default k=3)'
-             print '                        -r <neighbor_radius>   (Optional, instead of -k)'
-             print '                        -D <analysis of direct (not graph) distances>   (Optional)'
-             print '                        -b <number of bins for distance histogram>   (Default 50)'
-             print '                        -I <Isomap projection>   (Optional)'
-             print '\nNOTE: it is important to have a smooth histogram for accurate fitting'
-             sys.exit()
-         elif opt in ("-f", "--input_f"):
-             input_f = arg
-         elif opt in ("-m", "--metric"):
-             me = arg
-         elif opt in ("-k", "--nearest_neighbors"):
-             n_neighbors = int(arg)
-         elif opt in ("-r", "--neighbor_radius"):
-             radius = float(arg)
-         elif opt in ("-M", "--r_max"):
-             rmax = float(arg)
-         elif opt in ("-D", "--direct"):
-             direct=True
-         elif opt in ("-b", "--nbin"):
-             n_bins = int(arg)
-         elif opt in ("-I", "--project"):
-             isomap_projection = True 
-
-     n_bins=int(n_bins)
-
-     print '\nFile name is ', input_f
+     print '\nFile name: ', input_f
      
      #0 Reading input file
      f1 = open(input_f)
@@ -82,62 +58,91 @@ def main(argv):
                data.append([ord(x) for x in line[:-1]])
                data_line.append(line)
          elif line[0]!="#" and MSA==False : 
-               data.append(line.split())
+               data.append([float(x) for x in line.split()])
                data_line.append(line) 
      f1.close()
 
      data = n.asarray(data)
      if MSA : me='hamming'
-     print 'Metric is ', me
-
-     if radius>0. and (direct==False) : print 'Radius is', radius
-     elif (direct==False): print 'K is ', n_neighbors
+     if args.matrix : me='as from the input file'
+     print 'Metric: ', me
+     if radius>0. and (args.direct==False) : print 'Nearest Neighbors Radius:', radius
+     elif (args.direct==False): print 'Nearest Neighbors number K: ', n_neighbors
      else : print 'Distance distribution are calculated based on the  direct input-space distances '
-     print "# points, coordinates: ", data.shape
      
      if radius>0. :  
         filename = str(input_f.split('.')[0])+'R'+str(radius)
      else  :
         filename = str(input_f.split('.')[0])+'K'+str(n_neighbors)
      #0
- 
+      
      #1 Computing geodesic distance on connected points of the input file and relative histogram
-     if direct : C=distance.squareform(distance.pdist(data,me)); 
-     elif radius>0. :
-        A = radius_neighbors_graph(data, radius,metric=me,mode='distance')
-        C= graph_shortest_path(A,directed=False)     
-     else  :
-        A = kneighbors_graph(data, n_neighbors,metric=me,mode='distance')
-        C= graph_shortest_path(A,directed=False)     
-        radius=A.max()
+     if args.matrix :
+        if data.shape[1] == 1 :
+           dist_mat=distance.squareform(data.ravel())
+           mm=dist_mat.shape[1]
+        elif data.shape[1] == 3 : 
+           mm=int(max(data[:,1]))
+           dist_mat=n.zeros((mm,mm))
+           for i in range(0,data.shape[0]):
+               dist_mat[int(data[i,0])-1,int(data[i,1])-1]=data[i,2]
+               dist_mat[int(data[i,1])-1,int(data[i,0])-1]=data[i,2]
+        else : print 'ERROR: The distances input is not in the right matrix format' ; sys.exit(2)
+
+        print "\n# points: ", mm
+
+        A=n.zeros((mm,mm))
+        rrr=[]
+           
+        if args.direct : C=dist_mat
+        if radius > 0. :
+           for i in range(0,mm):
+               ll=dist_mat[i] < radius
+               A[i,ll]=dist_mat[i,ll]
+        else :
+           rrr=n.argsort(dist_mat)
+           for i in range(0,mm):
+               ll=rrr[i,0:n_neighbors+1]
+               A[i,ll]=dist_mat[i,ll]
+           radius = A.max()
+        C= graph_shortest_path(A,directed=False)
+        
+     else : 
+        print "\n# points, coordinates: ", data.shape
+        if args.direct : C=distance.squareform(distance.pdist(data,me));
+        elif radius>0. :
+           A = radius_neighbors_graph(data, radius,metric=me,mode='distance')
+           C= graph_shortest_path(A,directed=False)
+        else  :
+           A = kneighbors_graph(data, n_neighbors,metric=me,mode='distance')
+           C= graph_shortest_path(A,directed=False)
+           radius=A.max()
 
      C=n.asmatrix(C)
      connect=n.zeros(C.shape[0])
      conn=n.zeros(C.shape[0])
-
-     for i in range(0,C.shape[0]) : 
+     for i in range(0,C.shape[0]) :
          conn_points=n.count_nonzero(C[i])
          conn[i]=conn_points
-         if conn_points > C.shape[0]/2. : connect[i]=1 
-         else : C[i]=0 
-     
+         if conn_points > C.shape[0]/2. : connect[i]=1
+         else : C[i]=0
 
-     if n.count_nonzero(connect) > data.shape[0]/2. :
-        print 'Number of connected points:', n.count_nonzero(connect), '(',100*n.count_nonzero(connect)/data.shape[0],'% )'
+     if n.count_nonzero(connect) > C.shape[0]/2. :
+        print 'Number of connected points:', n.count_nonzero(connect), '(',100*n.count_nonzero(connect)/C.shape[0],'% )'
      else : print 'The neighbors graph is highly disconnected, increase K or Radius parameters' ; sys.exit(2)
 
      if n.count_nonzero(connect) < data.shape[0] :
         data_connect_file = open('connected_data_{0}.dat'.format(filename), "w")
-        for i in range(0,data.shape[0]) :
+        for i in range(0,C.shape[0]) :
             if connect[i]==1 :
                if MSA : data_connect_file.write(labels[i])
                data_connect_file.write(data_line[i])
         data_connect_file.close()
- 
+
+     
      indices = n.nonzero(n.triu(C,1))
      dist_list = n.asarray( C[indices] )[-1]
 
-     if n_bins==0 : n_bins=50 
      h=n.histogram(dist_list,n_bins)
      dx=h[1][1]-h[1][0]
 
@@ -156,25 +161,39 @@ def main(argv):
 
      if rmax> 0 : 
         avg=rmax
-        print '\n You fixed rmax, average will have the same value' 
+        print '\nNOTE: You fixed r_max for the initial fitting, average will have the same value' 
      else : 
         mm=n.argmax(h[0])
         rmax=h[1][mm]+dx/2
 
-     print '\nDistances Statistics:'
-     print 'Average, standard dev., n_bin, bin_size, rmax:', avg , std, n_bins, dx, rmax,'\n'
-     #1
+     if args.r_min>= 0 : print '\nNOTE: You fixed r_min for the initial fitting: r_min = ',args.r_min
+     if args.r_min== -1 : print '\nNOTE: You forced r_min to the standard procedure in the initial fitting'
 
-     if(n.fabs(rmax-avg)>std or rmax< radius+dx ) : 
-        
-        print 'ERROR: There is a problem with the r_max detection: \nusually either probably the histogram is not smooth enough (you may consider changing the n_bins with option -b)\nor r_max and r_avg are too distant (you may consider to fix the first detection of r_max with option -M or the neighbors parameter with (-r/-k)'
+     print '\nDistances Statistics:'
+     print 'Average, standard dev., n_bin, bin_size, r_max, r_NN_max:', avg , std, n_bins, dx, rmax, radius,'\n'
+     #1
+     tmp=1000000
+     if(args.r_min>=0) : tmp=args.r_min
+     elif(args.r_min==-1) : tmp=rmax-std
+ 
+     if(n.fabs(rmax-avg)>std) :
+        print 'ERROR: There is a problem with the r_max detection:' 
+        print '       usually either the histogram is not smooth enough (you may consider changing the n_bins with option -b)'
+        print '       or r_max and r_avg are too distant and you may consider to fix the first detection of r_max with option -M' 
+        print '       or to change the neighbor parameter with (-r/-k)'
+        plt.show()
+        sys.exit()
+
+     elif(rmax<= min(radius+dx,tmp)) :
+        print 'ERROR: There is a problem with the r_max detection, it is shorter than the largest distance in the neighbors graph.'
+        print '       You may consider to fix the first detection of r_max with option -M and/or the r_min with option -n to fix the fit range' 
+        print '       or to decrease the neighbors parameter with (-r/-k)'
         plt.show()
         sys.exit()
 
      #2 Finding actual r_max and std. dev. to define fitting interval [rmin;rM] 
      distr_x=h[1][0:n_bins]+dx/2
      distr_y=h[0][0:n_bins]
-       
      
      res= n.empty(25)
      left_distr_x = n.empty(n_bins)
@@ -186,10 +205,9 @@ def main(argv):
      b0=coeff[0][1]
      c0=coeff[0][2]
      
-     rmax = -b0/a0/2.0 
+     rmax = -b0/a0/2.0
+     if(args.r_max>0) : rmax=args.r_max 
      std=n.sqrt(-1/a0/2.)
-
-     
      left_distr_x= distr_x[n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.)]
      left_distr_y= n.log(distr_y[n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.)])
      coeff = n.polyfit(left_distr_x,left_distr_y,2,full='False')
@@ -199,19 +217,33 @@ def main(argv):
      
      rmax_old=rmax
      std_old=std
-      
      rmax = -b/a/2.
-     std=n.sqrt(-1/a0/2.)
-     rmin=max(rmax-2*n.sqrt(-1/a/2.)-dx/2,radius)
+     std=n.sqrt(-1/a/2.)   # it was a0
+     rmin=max(rmax-2*n.sqrt(-1/a/2.)-dx/2,0.)
+     if(args.r_min>=0) : 
+        rmin=args.r_min
+     elif (rmin < radius and args.r_min!=-1) : 
+        rmin = radius 
+        print '\nWARNING: For internal consistency r_min has been fixed to the largest distance (r_NN_max) in the neighbors graph.'
+        print '         It is possible to reset the standard definition of r_min=r_max-2*sigma running with option "-n -1" ' 
+        print '         or you can use -n to manually define a desired value (Example: -n 0.1)\n' 
+          
      rM=rmax+dx/4
-
-     if(n.fabs(rmax-rmax_old)>std/4 ) :    #fit consistency check
+ 
+     if(n.fabs(rmax-rmax_old)>std_old/4 ) :    #fit consistency check
        print '\nWARNING: The histogram is probably not smooth enough (you may try to change n_bin with -b), rmax is fixed to the value of first iteration\n'  
+       #print rmax,rmax_old,std/4,std_old/4
        rmax=rmax_old
        a=a0
        b=b0
        c=c0
-       rmin=max(rmax-2*n.sqrt(-1/a/2.)-dx/2,radius)
+       if(args.r_min>=0) :
+          rmin=args.r_min
+       elif (rmin < radius and args.r_min!=-1) :
+          rmin = radius
+          print '\nWARNING2: For internal consistency r_min has been fixed to the largest distance in the neighbors graph (r_NN_max).'
+          print '          It is possible to reset the standard definition of r_min=r_max-2*sigma running with option "-n -1" '
+          print '          or you can use -n to manually define a desired value (Example: -n 0.1)\n'
        rM=rmax+dx/4
      #2
 
@@ -257,6 +289,7 @@ def main(argv):
      print '\nFITTING RESULTS:' 
      print 'R, Dfit, Dmin', ratio,Dfit,Dmin , '\n'
 
+     if(Dmin == 1) : print 'NOTE: Dmin = 1 could indicate that the choice of the input parameters is not optimal or simply an underestimation of a 2D manifold\n'
      fit_file= open('fit_{0}.dat'.format(filename), "w")
 
      for i in range(0, len(y)):
@@ -294,23 +327,21 @@ def main(argv):
      plt.legend()
      plt.xlabel('D')
      plt.ylabel('RMDS')
-     #plt.show()
+     plt.show()
      plt.savefig(str(input_f.split('.')[0])+'_Dmin.png')
 
 
      #6
    
      #7 Optional: Isomap projection
-     if(isomap_projection==True) :
+     if args.projection :
         from sklearn.decomposition import KernelPCA
         C2=(distance.squareform(dist_list))**2
         C2=-.5*C2
         obj_pj=KernelPCA(n_components=100,kernel="precomputed")
         proj=obj_pj.fit_transform(C2)
-        #proj_file = open('proj_{0}.dat'.format(filename), "w")
         n.savetxt('proj_'+str(input_f.split('.')[0])+'.dat',proj[:,0:Dmin])
-        #proj_file.close()
-
+     print 'NOTE: it is important to have a smooth histogram for accurate fitting\n'
 
 if __name__ == "__main__":
      main(sys.argv[1:])
