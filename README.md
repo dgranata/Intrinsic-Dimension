@@ -1,5 +1,7 @@
 # Intrinsic-Dimension
-Python code for intrinsic dimension estimation of generic datasets
+Python code for intrinsic dimension estimation of generic datasets.
+
+Please address comments and questions to daniele.granata@gmail.com 
 
 INSTALLATION:
 
