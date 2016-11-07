@@ -1,3 +1,5 @@
+#comments and questions can be send to daniele.granata@gmail.com
+
 import sys,argparse
 import numpy as n
 import matplotlib.pyplot as plt
