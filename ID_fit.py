@@ -163,6 +163,7 @@ def main(argv):
 
      if rmax> 0 : 
         avg=rmax
+        std=min(std,rmax/2)
         print '\nNOTE: You fixed r_max for the initial fitting, average will have the same value' 
      else : 
         mm=n.argmax(h[0])
