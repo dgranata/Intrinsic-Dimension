@@ -1,4 +1,10 @@
-#comments and questions can be send to daniele.granata@gmail.com
+#Comments and questions can be send to daniele.granata@gmail.com
+
+#  In case you find the code useful, please cite 
+#  Daniele Granata, Vincenzo Carnevale  
+#  "Accurate estimation of intrinsic dimension using graph distances: unraveling the geometric complexity of datasets" 
+#  Scientific Report, 6, 31377 (2016)
+#  https://www.nature.com/articles/srep31377
 
 import sys,argparse
 import numpy as n
@@ -26,19 +32,18 @@ def main(argv):
      parser.add_argument("-m", "--metric" , type=str,  help="define the scipy distance to be used   (Default: euclidean or hamming for MSA)",default='euclidean')
      parser.add_argument("-x", "--matrix", help="if the input file contains already the complete upper triangle of a distance matrix (2 Formats: (idx_i idx_j distance) or simply distances list ) (Opt)", action="store_true")
      parser.add_argument("-k", "--n_neighbors", type=int, help="nearest_neighbors parameter (Default k=3)", default=3)
-     parser.add_argument("-r", "--radius", type=float, help="use neighbor radius instead of nearest_neighbors  (Opt)")
+     parser.add_argument("-r", "--radius", type=float, help="use neighbor radius instead of nearest_neighbors  (Opt)",default=0.)
      parser.add_argument("-b", "--n_bins", type=int, help="number of bins for distance histogram (Default 50)",default=50)
-     parser.add_argument("-M", "--r_max", type=float, help="fix the value of distance distribution maximum in the fit (Opt)",default=0)
+     parser.add_argument("-M", "--r_max", type=float, help="fix the value of distance distribution maximum in the fit (Opt, -1 force the standard fit, avoiding consistency checks)",default=0)
      parser.add_argument("-n", "--r_min", type=float, help="fix the value of shortest distance considered in the fit (Opt, -1 force the standard fit, avoiding consistency checks)",default=-10)
      parser.add_argument("-D", "--direct", help="analyze the direct (not graph) distances (Opt)", action="store_true")
      parser.add_argument("-I", "--projection", help="produce an Isomap projection using the first ID components (Opt)", action="store_true")
      
      args = parser.parse_args()
-     #print args
      input_f = args.filename
      me=args.metric
      n_neighbors = args.n_neighbors
-     radius=args.radius
+     radius=args.radius+0
      MSA=False
      n_bins = args.n_bins
      rmax=args.r_max
@@ -96,7 +101,6 @@ def main(argv):
         A=n.zeros((mm,mm))
         rrr=[]
            
-        if args.direct : C=dist_mat
         if radius > 0. :
            for i in range(0,mm):
                ll=dist_mat[i] < radius
@@ -107,7 +111,9 @@ def main(argv):
                ll=rrr[i,0:n_neighbors+1]
                A[i,ll]=dist_mat[i,ll]
            radius = A.max()
-        C= graph_shortest_path(A,directed=False)
+
+        if args.direct : C=dist_mat
+        else : C= graph_shortest_path(A,directed=False)
         
      else : 
         print "\n# points, coordinates: ", data.shape
@@ -144,6 +150,12 @@ def main(argv):
      
      indices = n.nonzero(n.triu(C,1))
      dist_list = n.asarray( C[indices] )[-1]
+     
+     dist_file= open('dist_{0}.dat'.format(filename), "w")
+
+     for i in range(0, len(dist_list)):
+         dist_file.write("%s " % ((dist_list[i])))
+     dist_file.close()
 
      h=n.histogram(dist_list,n_bins)
      dx=h[1][1]-h[1][0]
@@ -163,34 +175,39 @@ def main(argv):
 
      if rmax> 0 : 
         avg=rmax
-        std=min(std,rmax/2)
+        std=min(std,rmax)
         print '\nNOTE: You fixed r_max for the initial fitting, average will have the same value' 
      else : 
         mm=n.argmax(h[0])
         rmax=h[1][mm]+dx/2
 
+     if args.r_max== -1 : 
+        print '\nNOTE: You forced r_max to the maximum of the distribution in the initial fitting, avoiding consistency checks with the average'
+        avg=rmax
+        std=min(std,rmax)
+
      if args.r_min>= 0 : print '\nNOTE: You fixed r_min for the initial fitting: r_min = ',args.r_min
      if args.r_min== -1 : print '\nNOTE: You forced r_min to the standard procedure in the initial fitting'
-
+     
      print '\nDistances Statistics:'
      print 'Average, standard dev., n_bin, bin_size, r_max, r_NN_max:', avg , std, n_bins, dx, rmax, radius,'\n'
      #1
      tmp=1000000
      if(args.r_min>=0) : tmp=args.r_min
      elif(args.r_min==-1) : tmp=rmax-std
- 
-     if(n.fabs(rmax-avg)>std) :
+       
+     if(n.fabs(rmax-avg)>std+2.*dx) :
         print 'ERROR: There is a problem with the r_max detection:' 
         print '       usually either the histogram is not smooth enough (you may consider changing the n_bins with option -b)'
         print '       or r_max and r_avg are too distant and you may consider to fix the first detection of r_max with option -M' 
         print '       or to change the neighbor parameter with (-r/-k)'
         plt.show()
         sys.exit()
-
      elif(rmax<= min(radius+dx,tmp)) :
         print 'ERROR: There is a problem with the r_max detection, it is shorter than the largest distance in the neighbors graph.'
         print '       You may consider to fix the first detection of r_max with option -M and/or the r_min with option -n to fix the fit range' 
-        print '       or to decrease the neighbors parameter with (-r/-k)'
+        print '       or to decrease the neighbors parameter with (-r/-k). For example It is possible to enforce the standard fit range with '
+        print '       r_min=r_max-2*sigma running option "-n -1"'
         plt.show()
         sys.exit()
 
@@ -201,18 +218,45 @@ def main(argv):
      res= n.empty(25)
      left_distr_x = n.empty(n_bins)
      left_distr_y = n.empty(n_bins)
-     left_distr_x= distr_x[n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.0)]
-     left_distr_y= n.log(distr_y[n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.0)])
+
+     left_distr_x= distr_x[n.logical_and(n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.0),distr_y[:]>0.000001)]
+     left_distr_y= n.log(distr_y[n.logical_and(n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.0),distr_y[:]>0.000001)])
+
+     if(left_distr_y.shape[0]<4) :
+        print('ERROR: Too few datapoints to fit the distribution:')
+        print('       usually either the histogram is not smooth enough (you may consider changing the n_bins with option -b)')
+        print('       or the distance distribution itself has some issue')
+        plt.show()
+        print('R, Dfit, Dmin', 'ERROR3' , '\n')
+        sys.exit()
+
      coeff = n.polyfit(left_distr_x,left_distr_y,2,full='False')    
      a0=coeff[0][0]
      b0=coeff[0][1]
      c0=coeff[0][2]
-     
+       
+     rmax_old=rmax
+     std_old=std
      rmax = -b0/a0/2.0
+     
      if(args.r_max>0) : rmax=args.r_max 
-     std=n.sqrt(-1/a0/2.)
-     left_distr_x= distr_x[n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.)]
-     left_distr_y= n.log(distr_y[n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.)])
+     #if(args.r_max==-1) : rmax=avg   #to be used in future in case of problem with Ymax   
+     if a0<0 and n.fabs(rmax-rmax_old)<std_old/2+dx :
+        std=n.sqrt(-1/a0/2.)
+     else:
+        rmax=avg
+        std=std_old
+
+     left_distr_x= distr_x[n.logical_and(distr_y[:]>0.000001,n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.+dx))]
+     left_distr_y= n.log(distr_y[n.logical_and(distr_y[:]>0.000001, n.logical_and(distr_x[:]>rmax-std, distr_x[:]<rmax+std/2.+dx))])
+
+     if(left_distr_y.shape[0]<4) :
+        print('ERROR: Too few datapoints to fit the distribution:')
+        print('       usually either the histogram is not smooth enough (you may consider changing the n_bins with option -b)')
+        print('       or the distance distribution itself has some issue')
+        plt.show()
+        sys.exit()
+
      coeff = n.polyfit(left_distr_x,left_distr_y,2,full='False')
      a=coeff[0][0]
      b=coeff[0][1]
@@ -220,9 +264,11 @@ def main(argv):
      
      rmax_old=rmax
      std_old=std
-     rmax = -b/a/2.
-     std=n.sqrt(-1/a/2.)   # it was a0
-     rmin=max(rmax-2*n.sqrt(-1/a/2.)-dx/2,0.)
+     if a<0. :
+        rmax = -b/a/2. 
+        std=n.sqrt(-1/a/2.)   # it was a0
+     
+     rmin=max(rmax-2*std-dx/2,0.)
      if(args.r_min>=0) : 
         rmin=args.r_min
      elif (rmin < radius and args.r_min!=-1) : 
@@ -233,13 +279,14 @@ def main(argv):
           
      rM=rmax+dx/4
  
-     if(n.fabs(rmax-rmax_old)>std_old/4 ) :    #fit consistency check
+     if(n.fabs(rmax-rmax_old)>std_old/4+dx ) :    #fit consistency check
        print '\nWARNING: The histogram is probably not smooth enough (you may try to change n_bin with -b), rmax is fixed to the value of first iteration\n'  
-       #print rmax,rmax_old,std/4,std_old/4
+
        rmax=rmax_old
        a=a0
        b=b0
        c=c0
+
        if(args.r_min>=0) :
           rmin=args.r_min
        elif (rmin < radius and args.r_min!=-1) :
@@ -254,6 +301,13 @@ def main(argv):
      
      left_distr_x= distr_x[n.logical_and(n.logical_and(distr_x[:]>rmin,distr_x[:]<=rM),distr_y[:]>0.000001)]/rmax
      left_distr_y= n.log(distr_y[n.logical_and(n.logical_and(distr_x[:]>rmin,distr_x[:]<=rM),distr_y[:]>0.000001)])-(4*a*c-b**2)/4./a
+
+     if(left_distr_y.shape[0]<4) :
+        print('ERROR: Too few datapoints to fit the distribution:')
+        print('       usually either the histogram is not smooth enough (you may consider changing the n_bins with option -b)')
+        print('       or the distance distribution itself has some issue')
+        plt.show()
+        sys.exit()
 
      fit =  curve_fit(func2,left_distr_x,left_distr_y)
      ratio=n.sqrt(fit[0][0])
@@ -293,6 +347,7 @@ def main(argv):
      print 'R, Dfit, Dmin', ratio,Dfit,Dmin , '\n'
 
      if(Dmin == 1) : print 'NOTE: Dmin = 1 could indicate that the choice of the input parameters is not optimal or simply an underestimation of a 2D manifold\n'
+     if(Dfit > 25) : print('NOTE: Dfit > 25 could indicate that the choice of the input parameters is not optimal or that the the distance distribution itself has some issue \n')
      fit_file= open('fit_{0}.dat'.format(filename), "w")
 
      for i in range(0, len(y)):
@@ -308,7 +363,8 @@ def main(argv):
      statistics = str('# Npoints, rmax, standard deviation, R, D_fit, Dmin \n# \
      {}, {}, {}, {}, {}, {}\n'.format(n.count_nonzero(connect),rmax,std,ratio,Dfit,Dmin))
      stat_file.write("%s" % statistics)
-     for i in range(0, len(distr_x)-2): 
+     for i in range(0, len(distr_x)-2):
+       if distr_y[i]>0.000001 : 
 	 stat_file.write("%s " % distr_x[i])
 	 stat_file.write("%s " % distr_y[i])
 	 stat_file.write("%s\n" % n.log(distr_y[i]))
@@ -343,7 +399,7 @@ def main(argv):
         C2=-.5*C2
         obj_pj=KernelPCA(n_components=100,kernel="precomputed")
         proj=obj_pj.fit_transform(C2)
-        n.savetxt('proj_'+str(input_f.split('.')[0])+'.dat',proj[:,0:Dmin])
+        n.savetxt('proj_'+str(input_f.split('.')[0])+'.dat',proj[:,0:Dmin+1])
      print 'NOTE: it is important to have a smooth histogram for accurate fitting\n'
 
 if __name__ == "__main__":
